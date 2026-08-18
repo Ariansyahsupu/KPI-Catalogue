@@ -337,6 +337,7 @@
         // --- CONFIGURATION ---
         const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/1Bu4_lnZJe-NAezO0Jyw2AkqQk0bdVFTU8VrIlSn3eJY/gviz/tq?tqx=out:csv&sheet="; 
         const VAL_CSV_URL = "https://docs.google.com/spreadsheets/d/1f0e_taCohOJn9-ceEp6101ETUPNJwyoDAP0S9x6a8fk/gviz/tq?tqx=out:csv&gid=1041602548";
+        const MAT_COMP_CSV_URL = "https://docs.google.com/spreadsheets/d/1f0e_taCohOJn9-ceEp6101ETUPNJwyoDAP0S9x6a8fk/gviz/tq?tqx=out:csv&gid=1056449106";
 
         let globalData = [];
         let activeFilteredData = [];
@@ -352,12 +353,9 @@
             if (!str) return new Date(NaN);
             str = String(str).trim();
             
-            // Handle Google Sheets gviz date format: "Date(YYYY, M, D)"
             if (str.startsWith('Date(')) {
                 const dParts = str.match(/Date\((\d+),\s*(\d+),\s*(\d+)/);
-                if (dParts) {
-                    return new Date(parseInt(dParts[1]), parseInt(dParts[2]), parseInt(dParts[3]));
-                }
+                if (dParts) return new Date(parseInt(dParts[1]), parseInt(dParts[2]), parseInt(dParts[3]));
             }
 
             const parts = str.match(/(\d{1,4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,4})(?:\s+(\d{1,2})[:\.](\d{1,2})(?:[:\.](\d{1,2}))?)?(?:\s*(AM|PM|am|pm))?/i);
@@ -372,17 +370,13 @@
                     year = p1; month = p2; day = p3;
                 } else if (p3 > 1000) {
                     year = p3;
-                    if (assumeDDMM) { day = p1; month = p2; }
-                    else { month = p1; day = p2; }
+                    if (assumeDDMM) { day = p1; month = p2; } else { month = p1; day = p2; }
                 } else {
                     year = p3 + 2000;
-                    if (assumeDDMM) { day = p1; month = p2; }
-                    else { month = p1; day = p2; }
+                    if (assumeDDMM) { day = p1; month = p2; } else { month = p1; day = p2; }
                 }
 
-                if (month > 12) {
-                    let temp = month; month = day; day = temp;
-                }
+                if (month > 12) { let temp = month; month = day; day = temp; }
 
                 let hours = parts[4] ? parseInt(parts[4], 10) : 0;
                 const minutes = parts[5] ? parseInt(parts[5], 10) : 0;
@@ -397,9 +391,7 @@
             return new Date(str);
         }
 
-        function parseCustomDate(str) {
-            return parseDateStrict(str, true); 
-        }
+        function parseCustomDate(str) { return parseDateStrict(str, true); }
 
         document.addEventListener('DOMContentLoaded', () => {
             loadData();
@@ -407,10 +399,12 @@
             document.getElementById('searchInput').addEventListener('keyup', function(e) {
                 const term = e.target.value.toLowerCase();
                 const filtered = activeFilteredData.filter(item => { 
-                    // Search through all object values dynamically
                     return Object.values(item).some(val => String(val).toLowerCase().includes(term));
                 });
-                renderTable(filtered, document.getElementById('kpiSelector').value === 'Validation');
+                
+                const kpi = document.getElementById('kpiSelector').value;
+                const isDynamic = (kpi === 'Validation' || kpi === 'Material Completed');
+                renderTable(filtered, isDynamic);
             });
         });
 
@@ -423,9 +417,7 @@
 
             if (yearVal !== 'all' || monthVal !== 'all' || weekVal !== 'all') {
                 filteredData = globalData.filter(row => {
-                    if (!row['Timestamp']) return false;
-                    
-                    const dateObj = parseCustomDate(row['Timestamp']);
+                    const dateObj = row._parsedDate; // Use pre-parsed date from memory
                     if (isNaN(dateObj)) return false;
 
                     const rowYear = dateObj.getFullYear();
@@ -433,14 +425,10 @@
                     const rowDate = dateObj.getDate();
 
                     let yearMatch = true;
-                    if (yearVal !== 'all') {
-                        yearMatch = (rowYear === parseInt(yearVal));
-                    }
+                    if (yearVal !== 'all') yearMatch = (rowYear === parseInt(yearVal));
 
                     let monthMatch = true;
-                    if (monthVal !== 'all') {
-                        monthMatch = (rowMonth === parseInt(monthVal));
-                    }
+                    if (monthVal !== 'all') monthMatch = (rowMonth === parseInt(monthVal));
 
                     let weekMatch = true;
                     if (weekVal !== 'all') {
@@ -459,21 +447,23 @@
             processDashboard(activeFilteredData);
         }
 
-        function fetchSingleSheet(sheetName, isValidation) {
+        function fetchSingleSheet(sheetName, kpiType) {
             return new Promise((resolve) => {
-                const CSV_URL = isValidation ? VAL_CSV_URL : BASE_CSV_URL + encodeURIComponent(sheetName);
+                let CSV_URL = BASE_CSV_URL + encodeURIComponent(sheetName);
+                if (kpiType === 'Validation') CSV_URL = VAL_CSV_URL;
+                else if (kpiType === 'Material Completed') CSV_URL = MAT_COMP_CSV_URL;
+
+                const isDynamic = (kpiType === 'Validation' || kpiType === 'Material Completed');
+
                 Papa.parse(CSV_URL, {
                     download: true,
                     header: true,
                     skipEmptyLines: true,
-                    transformHeader: function(h) {
-                        return h.trim();
-                    },
+                    transformHeader: function(h) { return h.trim(); },
                     complete: function(results) {
                         if (results.data && results.data.length > 0) {
                             let sheetData = [];
-                            if (isValidation) {
-                                // Deteksi otomatis kolom tanggal terbaik untuk data Validation
+                            if (isDynamic) {
                                 const sampleRow = results.data.find(r => r && Object.values(r).some(v => v));
                                 let timeKey = null;
                                 if (sampleRow) {
@@ -481,44 +471,42 @@
                                         let kl = k.trim().toLowerCase();
                                         return kl.includes('timestamp') || kl.includes('time stamp') || kl.includes('waktu') || kl.includes('date') || kl.includes('tanggal') || kl.includes('created') || kl.includes('tgl');
                                     });
-                                    // Jika nama kolom tidak umum, scan isi baris pertama yang formatnya menyerupai tanggal
                                     if (!timeKey) {
                                         for (let i = 0; i < Math.min(10, results.data.length); i++) {
                                             let row = results.data[i];
                                             timeKey = Object.keys(row).find(k => {
                                                 const v = String(row[k]).trim();
-                                                const dateRegex = /\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4}/; // Matches standard dates
-                                                const gvizRegex = /Date\(\d+,\s*\d+,\s*\d+\)/; // Matches Google Viz Object Date
+                                                const dateRegex = /\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4}/; 
+                                                const gvizRegex = /Date\(\d+,\s*\d+,\s*\d+\)/; 
                                                 return dateRegex.test(v) || gvizRegex.test(v);
                                             });
                                             if (timeKey) break;
                                         }
                                     }
-                                    if (!timeKey) {
-                                        timeKey = Object.keys(sampleRow)[0];
-                                    }
+                                    if (!timeKey) timeKey = Object.keys(sampleRow)[0];
                                 }
 
-                                // Simpan semua data tanpa membuang baris untuk Validation
                                 sheetData = results.data.map(row => {
                                     if (timeKey && row[timeKey]) row['Timestamp'] = row[timeKey];
+                                    
+                                    // Parse and cache the date heavily ONCE to prevent lag
+                                    row._parsedDate = parseCustomDate(row['Timestamp'] || '');
+                                    
                                     return row;
                                 });
                             } else {
                                 sheetData = results.data.filter(row => {
-                                    // Dynamically find columns
                                     const timeKey = Object.keys(row).find(k => k.trim().toLowerCase().includes('timestamp') || k.trim().toLowerCase().includes('waktu'));
                                     if (timeKey && row[timeKey]) row['Timestamp'] = row[timeKey];
-                                    
                                     return row['Timestamp'] && String(row['Timestamp']).trim() !== '';
+                                }).map(row => {
+                                    // Parse and cache date
+                                    row._parsedDate = parseCustomDate(row['Timestamp'] || '');
+                                    
+                                    const matKey = Object.keys(row).find(k => k.trim().toLowerCase() === 'material') || Object.keys(row)[1];
+                                    row['Material'] = row[matKey];
+                                    return row;
                                 });
-                                
-                                if (!isValidation) {
-                                    sheetData.forEach(row => {
-                                        const matKey = Object.keys(row).find(k => k.trim().toLowerCase() === 'material') || Object.keys(row)[1];
-                                        row['Material'] = row[matKey];
-                                    });
-                                }
                             }
                             resolve(sheetData);
                         } else {
@@ -533,12 +521,40 @@
             });
         }
 
+        function clearDashboardUI() {
+            document.getElementById('valTotalReq').innerText = '0';
+            document.getElementById('valAvgRes').innerHTML = '0 <span class="text-gray-400 text-sm font-medium">...</span>';
+            document.getElementById('valMinRes').innerText = '0.0';
+            document.getElementById('valMaxRes').innerText = '0.0';
+            document.getElementById('valAvgStatus').innerHTML = '<span class="text-gray-400 font-medium">Loading...</span>';
+            document.getElementById('valKpiAch').innerText = '0%';
+            document.getElementById('barKpiAch').style.width = '0%';
+            document.getElementById('valPending').innerText = '0';
+
+            if (trendChartInstance) { trendChartInstance.destroy(); trendChartInstance = null; }
+            if (deptChartInstance) { deptChartInstance.destroy(); deptChartInstance = null; }
+
+            document.getElementById('tableBody').innerHTML = `
+                <tr>
+                    <td colspan="7" class="px-6 py-12 text-center text-gray-500">
+                        <div class="flex flex-col items-center justify-center">
+                            <div class="loader rounded-full border-2 border-t-2 border-gray-200 h-6 w-6 mb-3"></div>
+                            <p class="text-sm font-medium">Fetching records...</p>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            document.getElementById('tableInfo').innerText = 'Showing 0 records';
+        }
+
         function loadData() {
             const selectedKpi = document.getElementById('kpiSelector').value;
             const selectedSheet = document.getElementById('sheetSelector').value;
             
             let displayTitle = selectedSheet === 'all' ? `Metrics: ${selectedKpi}` : `${selectedKpi} - ${selectedSheet}`;
-            if(selectedKpi === 'Validation') displayTitle = `Metrics: Validation Progress`;
+            if(selectedKpi === 'Validation' || selectedKpi === 'Material Completed') {
+                displayTitle = `Metrics: ${selectedKpi} Progress`;
+            }
             document.getElementById('mainTitle').innerText = displayTitle;
 
             const badge = document.getElementById('dataSourceBadge');
@@ -547,13 +563,13 @@
             document.getElementById('lastUpdated').innerText = 'Syncing...';
 
             updateDynamicLabels(selectedKpi);
+            clearDashboardUI(); 
 
-            if (selectedKpi === 'Validation') {
-                // Fetch strictly from the specified GID
-                fetchSingleSheet("Validation", true).then(data => {
+            if (selectedKpi === 'Validation' || selectedKpi === 'Material Completed') {
+                fetchSingleSheet(selectedKpi, selectedKpi).then(data => {
                     if (data && data.length > 0) {
                         globalData = data;
-                        updateDashboardState("Live Connected (Validation)", "bg-emerald-50 text-emerald-700 border-emerald-200", "bg-emerald-500");
+                        updateDashboardState(`Live Connected (${selectedKpi})`, "bg-emerald-50 text-emerald-700 border-emerald-200", "bg-emerald-500");
                     } else {
                         globalData = [];
                         updateDashboardState("Data Empty", "bg-gray-50 text-gray-700 border-gray-200", "bg-gray-400");
@@ -561,11 +577,9 @@
                     applyFilters();
                 });
             } else {
-                // Fetch original logic (Response Time)
                 if (selectedSheet === 'all') {
                     const allSheets = Array.from(document.getElementById('sheetSelector').options)
-                        .map(opt => opt.value)
-                        .filter(val => val !== 'all');
+                        .map(opt => opt.value).filter(val => val !== 'all');
 
                     Promise.all(allSheets.map(sheet => fetchSingleSheet(sheet, false)))
                         .then(results => {
@@ -573,7 +587,7 @@
                             if (globalData.length > 0) {
                                 updateDashboardState("Live Connected", "bg-emerald-50 text-emerald-700 border-emerald-200", "bg-emerald-500");
                             } else {
-                                globalData = mockData;
+                                globalData = mockData.map(row => { row._parsedDate = parseCustomDate(row.Timestamp); return row; });
                                 updateDashboardState("Local Demo", "bg-gray-50 text-gray-700 border-gray-200", "bg-gray-400");
                             }
                             applyFilters();
@@ -584,7 +598,7 @@
                             globalData = data;
                             updateDashboardState("Live Connected", "bg-emerald-50 text-emerald-700 border-emerald-200", "bg-emerald-500");
                         } else {
-                            globalData = mockData;
+                            globalData = mockData.map(row => { row._parsedDate = parseCustomDate(row.Timestamp); return row; });
                             updateDashboardState("Local Demo", "bg-gray-50 text-gray-700 border-gray-200", "bg-gray-400");
                         }
                         applyFilters();
@@ -596,12 +610,12 @@
         function updateDynamicLabels(kpi) {
             const sheetContainer = document.getElementById('sheetSelectorContainer');
             
-            if (kpi === 'Validation') {
+            if (kpi === 'Validation' || kpi === 'Material Completed') {
                 if(sheetContainer) sheetContainer.style.display = 'none';
                 
-                document.getElementById('card1Title').innerText = 'Total Validations';
+                document.getElementById('card1Title').innerText = kpi === 'Validation' ? 'Total Validations' : 'Total Materials';
                 document.getElementById('card2Title').innerText = 'Status Progress';
-                document.getElementById('card3Title').innerText = 'Validation Achievement';
+                document.getElementById('card3Title').innerText = kpi === 'Validation' ? 'Validation Achievement' : 'Completed Achievement';
                 document.getElementById('card4Title').innerText = 'Percentage Open';
                 
                 document.getElementById('card2Icon').className = 'fas fa-tasks text-xs';
@@ -639,7 +653,7 @@
         function processDashboard(data) {
             const selectedKpi = document.getElementById('kpiSelector').value;
             
-            if (selectedKpi === 'Validation') {
+            if (selectedKpi === 'Validation' || selectedKpi === 'Material Completed') {
                 processValidation(data);
             } else {
                 processResponseTime(data);
@@ -664,7 +678,7 @@
                 const weekNum = Math.ceil((pastDaysOfYear + startOfYear.getDay() + 1) / 7);
                 return `${yyyy}-W${String(weekNum).padStart(2, '0')}`;
             }
-            return `${yyyy}-${mm}-${dd}`; // fallback
+            return `${yyyy}-${mm}-${dd}`; 
         }
 
         function processValidation(data) {
@@ -680,7 +694,6 @@
                 let isClose = false;
                 let isOpen = false;
                 
-                // 1. Cek kolom spesifik yang bernama "Status", "Progress", dll
                 let statusKey = Object.keys(row).find(k => {
                     let kl = k.trim().toLowerCase();
                     return kl === 'status' || kl.includes('progress') || kl.includes('proggres') || kl === 'state' || kl.includes('valid') || kl === 'ket' || kl === 'keterangan';
@@ -695,7 +708,6 @@
                     }
                 }
 
-                // 2. Cek apakah ada tanggal penyelesaian/selesai yang terisi jika step 1 gagal
                 if (!isClose && !isOpen) {
                     const closedDateKey = Object.keys(row).find(k => {
                         let kl = k.trim().toLowerCase();
@@ -707,7 +719,6 @@
                     }
                 }
 
-                // 3. Pindai seluruh sel sebagai fallback super luas
                 if (!isClose && !isOpen) {
                     Object.values(row).forEach(val => {
                         if (val === null || val === undefined) return;
@@ -717,36 +728,31 @@
                     });
                 }
 
-                // 4. Default penentuan akhir
                 if (isClose) {
                     countClose++;
                     row['_internalStatus'] = 'Close';
                 } else {
-                    countOpen++; // Default ke Open jika tidak ada jejak validasi
+                    countOpen++; 
                     row['_internalStatus'] = 'Open';
                 }
 
                 const dept = row['Dept'] || row['Department'] || row['Departemen'] || 'Unknown';
                 deptCounts[dept] = (deptCounts[dept] || 0) + 1;
 
-                if (row['Timestamp']) {
-                    const parsedDate = parseCustomDate(row['Timestamp']);
-                    if (!isNaN(parsedDate)) {
-                        const dateKey = getGroupingKey(parsedDate, trendGrouping);
+                const parsedDate = row._parsedDate; // Gunakan cached date
+                if (!isNaN(parsedDate)) {
+                    const dateKey = getGroupingKey(parsedDate, trendGrouping);
 
-                        if (!trendData[dateKey]) trendData[dateKey] = { total: 0, closeCount: 0 };
-                        
-                        trendData[dateKey].total++;
-                        if (isClose) trendData[dateKey].closeCount++;
-                    }
+                    if (!trendData[dateKey]) trendData[dateKey] = { total: 0, closeCount: 0 };
+                    
+                    trendData[dateKey].total++;
+                    if (isClose) trendData[dateKey].closeCount++;
                 }
             });
 
-            // Set to 3 decimal places as instructed
             const percentClose = totalRequests > 0 ? (countClose / totalRequests * 100).toFixed(3) : "0.000";
             const percentOpen = totalRequests > 0 ? (countOpen / totalRequests * 100).toFixed(3) : "0.000";
 
-            // Update UI values
             animateValue("valTotalReq", parseInt(document.getElementById('valTotalReq').innerText) || 0, totalRequests, 1000);
             
             document.getElementById('valAvgRes').innerHTML = `${countClose} <span class="text-gray-400 text-sm font-medium">Closed</span> / ${countOpen} <span class="text-gray-400 text-sm font-medium">Open</span>`;
@@ -755,11 +761,9 @@
             document.getElementById('valKpiAch').innerText = `${percentClose}%`;
             document.getElementById('barKpiAch').style.width = `${percentClose}%`;
             
-            // Monochrome style progress
             if (parseFloat(percentClose) < 80) document.getElementById('barKpiAch').className = "bg-gray-400 h-1.5 rounded-full transition-all duration-1000 ease-out";
             else document.getElementById('barKpiAch').className = "bg-black h-1.5 rounded-full transition-all duration-1000 ease-out";
 
-            // Percentage Open on 4th card
             document.getElementById('valPending').innerText = `${percentOpen}%`;
 
             renderValidationCharts(trendData, deptCounts, trendGrouping);
@@ -835,18 +839,16 @@
                 const dept = row['Dept'] || 'Unknown';
                 deptCounts[dept] = (deptCounts[dept] || 0) + 1;
 
-                if (row['Timestamp']) {
-                    const parsedDate = parseCustomDate(row['Timestamp']);
-                    if (!isNaN(parsedDate)) {
-                        const dateKey = getGroupingKey(parsedDate, trendGrouping);
+                const parsedDate = row._parsedDate; // cached date
+                if (!isNaN(parsedDate)) {
+                    const dateKey = getGroupingKey(parsedDate, trendGrouping);
 
-                        if (!trendData[dateKey]) {
-                            trendData[dateKey] = { sum: 0, count: 0 };
-                        }
-                        if (!isNaN(resTime)) {
-                            trendData[dateKey].sum += resTime;
-                            trendData[dateKey].count++;
-                        }
+                    if (!trendData[dateKey]) {
+                        trendData[dateKey] = { sum: 0, count: 0 };
+                    }
+                    if (!isNaN(resTime)) {
+                        trendData[dateKey].sum += resTime;
+                        trendData[dateKey].count++;
                     }
                 }
             });
@@ -999,7 +1001,6 @@
             const sortedKeys = Object.keys(trendData).sort();
             const trendLabels = sortedKeys.map(key => formatTrendLabel(key, grouping));
             
-            // For Validation, we plot % Close Progress (rounded to 3 decimals visually)
             const trendValues = sortedKeys.map(key => {
                 const item = trendData[key];
                 return item.total > 0 ? ((item.closeCount / item.total) * 100).toFixed(3) : 0;
@@ -1040,14 +1041,13 @@
             return dateStr;
         }
 
-        function renderTable(dataToRender, isValidation) {
+        function renderTable(dataToRender, isDynamic) {
             const thead = document.getElementById('tableHead');
             const tbody = document.getElementById('tableBody');
             
-            // Adjust table header dynamically
-            if (isValidation) {
+            if (isDynamic) {
                 if (dataToRender.length > 0) {
-                    const keys = Object.keys(dataToRender[0]).filter(k => k !== '_internalStatus' && k !== 'Timestamp');
+                    const keys = Object.keys(dataToRender[0]).filter(k => k !== '_internalStatus' && k !== 'Timestamp' && k !== '_parsedDate');
                     let thHtml = `<th class="px-6 py-3 text-xs font-medium text-gray-500 tracking-wider">Timestamp</th>`;
                     keys.forEach(k => {
                         thHtml += `<th class="px-6 py-3 text-xs font-medium text-gray-500 tracking-wider">${k}</th>`;
@@ -1085,23 +1085,22 @@
                 return;
             }
 
-            const sortedData = [...dataToRender].sort((a, b) => new Date(b.Timestamp) - new Date(a.Timestamp));
-            
-            // Limit tampilan tabel ke 200 baris terbaru agar browser tidak freeze karena merender ratusan ribu elemen HTML
+            // Gunakan _parsedDate untuk kecepatan super maksimal
+            const sortedData = [...dataToRender].sort((a, b) => b._parsedDate - a._parsedDate);
             const displayData = sortedData.slice(0, 200);
             
             displayData.forEach(row => {
                 const tr = document.createElement('tr');
                 tr.className = "hover:bg-gray-50/50 transition-colors group";
 
-                if (isValidation) {
+                if (isDynamic) {
                     const status = row['_internalStatus'] || "Open";
                     let statusHtml = `<span class="px-2 py-1 rounded text-[11px] font-medium tracking-wide bg-gray-100 text-gray-800 border border-gray-200">${status}</span>`;
                     if (status === 'Close') {
                         statusHtml = `<span class="px-2 py-1 rounded text-[11px] font-medium tracking-wide bg-black text-white">Closed</span>`;
                     }
                     
-                    const keys = Object.keys(row).filter(k => k !== 'Timestamp' && k !== '_internalStatus');
+                    const keys = Object.keys(row).filter(k => k !== 'Timestamp' && k !== '_internalStatus' && k !== '_parsedDate');
                     let tdHtml = `
                         <td class="px-6 py-3.5">
                             <div class="flex flex-col">
@@ -1118,7 +1117,6 @@
                     tdHtml += `<td class="px-6 py-3.5 text-center">${statusHtml}</td>`;
                     tr.innerHTML = tdHtml;
                 } else {
-                    // Original SaaS Status Badge (Strict Minimalist)
                     const status = (row['Progress/Remarks'] || "").toLowerCase();
                     let statusHtml = `<span class="px-2 py-1 rounded text-[11px] font-medium tracking-wide bg-gray-100 text-gray-500 border border-gray-200">${row['Progress/Remarks'] || '-'}</span>`;
                     if (status === 'done' || status === 'completed') {
@@ -1127,7 +1125,6 @@
                         statusHtml = `<span class="px-2 py-1 rounded text-[11px] font-medium tracking-wide bg-gray-100 text-gray-800 border border-gray-200">In Progress</span>`;
                     }
 
-                    // Minimalist Ach Badge (Dots)
                     const ach = (row['Ach'] || "").toLowerCase();
                     let achHtml = `<span class="text-gray-300">-</span>`;
                     if (ach.includes('achieved') && !ach.includes('not')) {
